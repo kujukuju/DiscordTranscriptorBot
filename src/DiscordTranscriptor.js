@@ -14,8 +14,17 @@ for (let i = 0; i < rooms.length; i++) {
     roomMap[rooms[i][0]] = rooms[i][1];
 }
 
+let currentThreadMessageCreating;
+let currentThreadMessage;
+let currentThreadTime;
+let currentThreadParticipants;
+let currentThreadCreating;
+let currentThread;
 let currentVoiceChannel;
 let currentTextChannel;
+
+// [{name, time, text}, ...]
+const messageQueue = [];
 
 const speechClient = new speech.SpeechClient();
 const speechConfig = {
@@ -25,13 +34,14 @@ const speechConfig = {
     languageCode: 'en-US',
 };
 
+// const intents = new Discord.Intents(Discord.Intents.FLAGS.GUILD_MESSAGES | Discord.Intents.FLAGS.GUILD_VOICE_STATES | Discord.Intents.FLAGS.GUILDS);
 const client = new Discord.Client();
+
 client.on('ready', () => {
     console.log('Logged in as ' + client.user.tag + '.');
     client.guilds.cache.every(guild => {
         const voiceChannel = guild.me.voice.channel;
         if (voiceChannel) {
-            console.log(voiceChannel.members.size);
             if (!voiceChannel.members || voiceChannel.members.size <= 1) {
                 voiceChannel.join().then(() => {
                     voiceChannel.leave();
@@ -53,6 +63,92 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 });
 
+const processMessageQueue = () => {
+    // waits until the next message has text to pop them all out
+    if (messageQueue.length === 0) {
+        return;
+    }
+
+    if (!messageQueue[0].text) {
+        return;
+    }
+
+    if (!currentThreadTime) {
+        return;
+    }
+
+    const entry = messageQueue.shift();
+    currentTextChannel.send('`' + entry.name + ' ' + entry.time + '`: ' + entry.text).then(message => {
+        processMessageQueue();
+    }).catch(error => {
+        console.error('Could not send message. ' , error);
+        messageQueue.unshift(entry);
+
+        processMessageQueue();
+    });
+
+    // const desiredMessage = currentThreadParticipants.join('\n');
+    // if (!currentThreadMessage && !currentThreadMessageCreating) {
+    //     currentThreadMessageCreating = true;
+    //
+    //     currentTextChannel.send(desiredMessage).then(message => {
+    //         currentThreadMessage = message;
+    //         currentThreadMessageCreating = false;
+    //
+    //         processMessageQueue();
+    //     }).catch(error => {
+    //         console.error('Could not create thread message. ', error);
+    //         currentThreadMessageCreating = false;
+    //
+    //         processMessageQueue();
+    //     });
+    // }
+    //
+    // if (!currentThreadMessage) {
+    //     return;
+    // }
+    //
+    // if (!currentThread && !currentThreadCreating) {
+    //     currentThreadCreating = true;
+    //
+    //     const hours = (currentThreadTime.getHours() + 1) % 12;
+    //     const pm = currentThreadTime.getHours() + 1 >= 12;
+    //     const minutes = currentThreadTime.getMinutes();
+    //     const name = currentVoiceChannel.name + ' ' + hours + ':' + minutes + ' ' + (pm ? 'PM' : 'AM');
+    //     currentThreadMessage.startThread(name, 1440).then(thread => {
+    //         currentThread = thread;
+    //         currentThreadCreating = false;
+    //
+    //         processMessageQueue();
+    //     }).catch(error => {
+    //         console.error('Could not create thread. ', error);
+    //         currentThreadCreating = false;
+    //
+    //         processMessageQueue();
+    //     });
+    // }
+    //
+    // if (!currentThread) {
+    //     return;
+    // }
+    //
+    // const message = currentThreadMessage.content;
+    // if (message !== desiredMessage) {
+    //     currentThreadMessage.edit(desiredMessage);
+    // }
+    //
+    // const entry = messageQueue.shift();
+    // currentThread.send(entry.name + ' ' + entry.time + ': ' + entry.text).then(message => {
+    //     processMessageQueue();
+    // }).catch(error => {
+    //     console.error('Could not send thread message. ' , error);
+    //     messageQueue.unshift(entry);
+    //
+    //     processMessageQueue();
+    // });
+
+};
+
 const joinVoiceChannel = (guild, channelID) => {
     if (currentVoiceChannel) {
         return;
@@ -64,20 +160,37 @@ const joinVoiceChannel = (guild, channelID) => {
     }
 
     const [voiceChannel, textChannel] = requestedChannels;
-    const bitrate = voiceChannel.bitrate;
+    // const bitrate = voiceChannel.bitrate;
     voiceChannel.join().then(connection => {
         connection.on('speaking', (user, speaking) => {
             if (speaking.bitfield) {
                 const data = [];
 
+                const startTime = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Los_Angeles"}));
+                const entry = {
+                    name: user.username,
+                    time: formatTime(startTime),
+                    text: null,
+                };
+                messageQueue.push(entry);
+
+                if (!currentThreadParticipants) {
+                    currentThreadParticipants = [];
+                }
+
+                if (!currentThreadParticipants.includes(user.username)) {
+                    currentThreadParticipants.push(user.username);
+                }
+
                 const stream = connection.receiver.createStream(user.id, {mode: 'pcm'});
                 stream.on('data', chunk => {
-                    const test = new Uint8Array(chunk);
-                    data.push(...test);
+                    const array = new Uint8Array(chunk);
+                    data.push(...array);
                 });
                 stream.on('end', () => {
                     const bytes = new Uint8Array(data);
 
+                    // TODO long recognize? maybe based on time duration?
                     speechClient.recognize({
                         config: speechConfig,
                         audio: {
@@ -86,7 +199,16 @@ const joinVoiceChannel = (guild, channelID) => {
                     }).then(response => {
                         const transcript = response[0]?.results[0]?.alternatives[0]?.transcript;
                         if (transcript) {
-                            console.log(transcript);
+                            entry.text = transcript;
+
+                            processMessageQueue();
+                        } else {
+                            const index = messageQueue.indexOf(entry);
+                            if (index === -1) {
+                                console.error('Could not find message queue entry to remove.');
+                            } else {
+                                messageQueue.splice(index, 1);
+                            }
                         }
                     }).catch(error => {
                         console.error('Could not process speech. ', error);
@@ -102,6 +224,7 @@ const joinVoiceChannel = (guild, channelID) => {
         console.error('Could not mute self. ', error);
     });
 
+    currentThreadTime = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Los_Angeles"}));
     currentVoiceChannel = voiceChannel;
     currentTextChannel = textChannel;
 };
@@ -119,6 +242,10 @@ const leaveVoiceChannel = (guild, channelID) => {
     const memberCount = channel.members.size;
     if (memberCount <= 1) {
         channel.leave();
+        currentThreadMessage = null;
+        currentThreadTime = null;
+        currentThreadParticipants = null;
+        currentThreadCreating = null;
         currentVoiceChannel = null;
         currentTextChannel = null;
     }
@@ -142,6 +269,14 @@ const getRecordingChannelPair = (guild, recordingChannelID) => {
     }
 
     return [channel, transcribeChannel];
+};
+
+const formatTime = (date) => {
+    const hours = ((date.getHours()) % 12) || 12;
+    const pm = date.getHours() + 1 >= 12;
+    const minutes = date.getMinutes();
+
+    return hours + ':' + minutes + ' ' + (pm ? 'PM' : 'AM');
 };
 
 client.login(key);
