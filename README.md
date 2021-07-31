@@ -10,4 +10,6 @@ Voice text
 General main
 ```
 
-Navigate to https://discord.com/api/oauth2/authorize?client_id=870594659691417642&permissions=103086557184&scope=bot
+Get your credentials file from https://cloud.google.com/speech-to-text/ and place it in the root folder as `credentials.json`.
+
+Navigate to https://discord.com/api/oauth2/authorize?client_id=870594659691417642&permissions=103086557184&scope=bot and add your bot to your server.

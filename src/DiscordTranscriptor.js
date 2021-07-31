@@ -1,6 +1,9 @@
 const Discord = require('discord.js');
+const speech = require('@google-cloud/speech');
 const fs = require('fs');
 const path = require('path');
+
+process.env.GOOGLE_APPLICATION_CREDENTIALS = path.join(__dirname, '..', 'credentials.json');
 
 const key = String(fs.readFileSync(path.join(__dirname, '..', 'key.txt')));
 
@@ -13,6 +16,14 @@ for (let i = 0; i < rooms.length; i++) {
 
 let currentVoiceChannel;
 let currentTextChannel;
+
+const speechClient = new speech.SpeechClient();
+const speechConfig = {
+    encoding: 'LINEAR16', // 'OGG_OPUS', // 'WEBM_OPUS',
+    sampleRateHertz: 48000, // ???
+    audioChannelCount: 2,
+    languageCode: 'en-US',
+};
 
 const client = new Discord.Client();
 client.on('ready', () => {
@@ -57,12 +68,29 @@ const joinVoiceChannel = (guild, channelID) => {
     voiceChannel.join().then(connection => {
         connection.on('speaking', (user, speaking) => {
             if (speaking.bitfield) {
-                const stream = connection.receiver.createStream(user.id);
+                const data = [];
+
+                const stream = connection.receiver.createStream(user.id, {mode: 'pcm'});
                 stream.on('data', chunk => {
-                    console.log('speaking data ', chunk);
+                    const test = new Uint8Array(chunk);
+                    data.push(...test);
                 });
                 stream.on('end', () => {
-                    console.log('speaking stream ended');
+                    const bytes = new Uint8Array(data);
+
+                    speechClient.recognize({
+                        config: speechConfig,
+                        audio: {
+                            content: bytes,
+                        },
+                    }).then(response => {
+                        const transcript = response[0]?.results[0]?.alternatives[0]?.transcript;
+                        if (transcript) {
+                            console.log(transcript);
+                        }
+                    }).catch(error => {
+                        console.error('Could not process speech. ', error);
+                    });
                 });
             }
         });
