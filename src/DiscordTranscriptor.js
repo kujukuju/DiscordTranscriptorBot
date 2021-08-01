@@ -7,6 +7,7 @@ process.env.GOOGLE_APPLICATION_CREDENTIALS = path.join(__dirname, '..', 'credent
 
 const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const longDuration = 50 * 1000;
 
 const key = String(fs.readFileSync(path.join(__dirname, '..', 'key.txt')));
 
@@ -18,21 +19,10 @@ for (let i = 0; i < rooms.length; i++) {
 }
 
 let currentData;
-// let currentThreadMessageCreating;
-// let currentThreadMessage;
-// let currentThreadTime;
-// let currentThreadParticipants;
-// let currentThreadCreating;
-// let currentThread;
-// let currentVoiceChannel;
-// let currentTextChannel;
-
-// [{name, time, text}, ...]
-// const messageQueue = [];
 
 const speechClient = new speech.SpeechClient();
 const speechConfig = {
-    encoding: 'LINEAR16', // 'OGG_OPUS', // 'WEBM_OPUS',
+    encoding: 'LINEAR16', // LINEAR16, OGG_OPUS, WEBM_OPUS
     sampleRateHertz: 48000, // ???
     audioChannelCount: 2,
     languageCode: 'en-US',
@@ -176,6 +166,7 @@ const joinVoiceChannel = (guild, channelID) => {
             if (speaking.bitfield) {
                 const bytes = [];
 
+                const startMilliseconds = Date.now();
                 const startTime = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Los_Angeles"}));
                 const entry = {
                     name: user.username,
@@ -197,7 +188,22 @@ const joinVoiceChannel = (guild, channelID) => {
                     }
                 }
 
-                const stream = connection.receiver.createStream(user.id, {mode: 'pcm'});
+                const processTranscript = (transcript) => {
+                    if (transcript) {
+                        entry.text = transcript;
+
+                        processMessageQueue(data);
+                    } else {
+                        const index = data.messageQueue.indexOf(entry);
+                        if (index === -1) {
+                            console.error('Could not find message queue entry to remove.');
+                        } else {
+                            data.messageQueue.splice(index, 1);
+                        }
+                    }
+                };
+
+                const stream = connection.receiver.createStream(user.id, {mode: 'pcm'}); // opus, pcm
                 stream.on('data', chunk => {
                     const array = new Uint8Array(chunk);
                     bytes.push(...array);
@@ -205,29 +211,36 @@ const joinVoiceChannel = (guild, channelID) => {
                 stream.on('end', () => {
                     const byteArray = new Uint8Array(bytes);
 
-                    // TODO long recognize? maybe based on time duration?
-                    speechClient.recognize({
-                        config: speechConfig,
-                        audio: {
-                            content: byteArray,
-                        },
-                    }).then(response => {
-                        const transcript = response[0]?.results[0]?.alternatives[0]?.transcript;
-                        if (transcript) {
-                            entry.text = transcript;
-
-                            processMessageQueue(data);
-                        } else {
-                            const index = data.messageQueue.indexOf(entry);
-                            if (index === -1) {
-                                console.error('Could not find message queue entry to remove.');
-                            } else {
-                                data.messageQueue.splice(index, 1);
+                    if (Date.now() - startMilliseconds > longDuration) {
+                        speechClient.longRunningRecognize({
+                            config: speechConfig,
+                            audio: {
+                                content: byteArray,
                             }
-                        }
-                    }).catch(error => {
-                        console.error('Could not process speech. ', error);
-                    });
+                        }).then(operations => {
+                            const operation = operations[0];
+                            operation.promise().then(response => {
+                                const transcript = response[0]?.results[0]?.alternatives[0]?.transcript;
+                                processTranscript(transcript);
+                            }).catch(error => {
+                                console.error('Could not resolve long running promise. ', error);
+                            });
+                        }).catch(error => {
+                            console.error('Could not run longRunningRecognize. ', error);
+                        });
+                    } else {
+                        speechClient.recognize({
+                            config: speechConfig,
+                            audio: {
+                                content: byteArray,
+                            },
+                        }).then(response => {
+                            const transcript = response[0]?.results[0]?.alternatives[0]?.transcript;
+                            processTranscript(transcript);
+                        }).catch(error => {
+                            console.error('Could not process speech. ', error);
+                        });
+                    }
                 });
             }
         });
